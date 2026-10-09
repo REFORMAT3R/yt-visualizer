@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualizador musical</title>
+
+    <style>
+        body {
+            margin: 0;
+            background: #111;
+            color: white;
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        canvas {
+            background: #111;
+        }
+
+        #controles {
+            position: fixed;
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(600px, 90%);
+            display: flex;
+            gap: 8px;
+            z-index: 2;
+        }
+
+        #youtubeUrl {
+            flex: 1;
+            min-width: 0;
+            padding: 10px;
+            border: 1px solid #555;
+            border-radius: 5px;
+            background: #222;
+            color: white;
+        }
+
+        button {
+            padding: 10px 15px;
+            border: 0;
+            border-radius: 5px;
+            cursor: pointer;
+            background: white;
+            color: #111;
+            font-weight: bold;
+        }
+
+        #estado {
+            position: fixed;
+            top: 60px;
+            text-align: center;
+            font-size: 13px;
+            color: #ccc;
+        }
+
+        #audio {
+            position: fixed;
+            bottom: 12px;
+            width: min(400px, 90%);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="controles">
+        <input
+            id="youtubeUrl"
+            type="url"
+            placeholder="Pega una URL de YouTube"
+        >
+        <button id="reproducir">Reproducir</button>
+    </div>
+
+    <div id="estado">Introduce una URL para comenzar.</div>
+
+    <audio id="audio" controls></audio>
+
+    <canvas id="canvas" width="900" height="700"></canvas>
+
+    <script>
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+
+        const audio = document.getElementById("audio");
+        const boton = document.getElementById("reproducir");
+        const entradaUrl = document.getElementById("youtubeUrl");
+        const estado = document.getElementById("estado");
+
+        const centroX = 450;
+        const centroY = 350;
+        const radio = 160;
+
+        // CONFIGURACIÓN DE LA OLA
+
+        const anchoInicial = Math.PI / 1.4;
+        const anchoFinal = Math.PI / 5;
+
+        const velocidad = 0.05;
+        const alturaMaxima = 150;
+
+        const inicio = 0;
+        const final = -Math.PI;
+
+        let anguloCentro = inicio;
+        let musicaIniciada = false;
+
+        // CONTROL DE PULSOS Y RECORRIDO
+
+        let intensidadAnterior = 0;
+        let ultimoPulso = 0;
+
+        const umbralPulso = 0.025;
+        const cambioMinimoPulso = 0.006;
+        const intervaloEntrePulsos = 180;
+
+        let recorridoActivo = false;
+
+        // ANALIZADOR DE AUDIO
+
+        let contextoAudio = null;
+        let analizador = null;
+        let fuenteAudio = null;
+        let datosFrecuencia = null;
+
+        let intensidadSuavizada = 0;
+
+        async function prepararAudio() {
+            if (!contextoAudio) {
+                contextoAudio = new (
+                    window.AudioContext || window.webkitAudioContext
+                )();
+
+                analizador = contextoAudio.createAnalyser();
+                analizador.fftSize = 2048;
+                analizador.smoothingTimeConstant = 0.75;
+
+                datosFrecuencia = new Uint8Array(
+                    analizador.frequencyBinCount
+                );
+
+                fuenteAudio = contextoAudio.createMediaElementSource(audio);
+
+                fuenteAudio.connect(analizador);
+                analizador.connect(contextoAudio.destination);
+            }
+
+            if (contextoAudio.state === "suspended") {
+                await contextoAudio.resume();
+            }
+        }
+
+        // Obtiene la intensidad general del sonido
+
+        function obtenerIntensidad() {
+            if (!analizador || audio.paused) {
+                intensidadSuavizada *= 0.96;
+                return intensidadSuavizada;
+            }
+
+            analizador.getByteFrequencyData(datosFrecuencia);
+
+            let suma = 0;
+
+            for (let i = 0; i < datosFrecuencia.length; i++) {
+                suma += datosFrecuencia[i];
+            }
+
+            const intensidad = datosFrecuencia.length > 0
+                ? (suma / datosFrecuencia.length) / 255
+                : 0;
+
+            intensidadSuavizada +=
+                (intensidad - intensidadSuavizada) * 0.3;
+
+            return intensidadSuavizada;
+        }
+
+        // REPRODUCIR DESDE YOUTUBE
+
+        boton.addEventListener("click", async () => {
+            const url = entradaUrl.value.trim();
+
+            if (!/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(url)) {
+                estado.textContent =
+                    "Introduce una URL válida de YouTube.";
+                return;
+            }
+
+            try {
+                boton.disabled = true;
+                estado.textContent = "Cargando música...";
+
+                await prepararAudio();
+
+                audio.src = "/audio?url=" + encodeURIComponent(url);
+                audio.load();
+
+                await audio.play();
+
+                musicaIniciada = true;
+                anguloCentro = inicio;
+                recorridoActivo = false;
+                intensidadAnterior = 0;
+                ultimoPulso = 0;
+
+                estado.textContent = "Música reproduciéndose.";
+            } catch (error) {
+                console.error(error);
+
+                estado.textContent =
+                    "No se pudo reproducir. Revisa la URL y la consola del servidor.";
+            } finally {
+                boton.disabled = false;
+            }
+        });
+
+        // DIBUJAR VISUALIZADOR
+
+        function dibujar() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const intensidad = obtenerIntensidad();
+            const pulso = Math.min(1, intensidad * 4);
+
+            // DETECTAR UN NUEVO PULSO
+
+            const ahora = performance.now();
+
+            const nuevoPulso =
+                musicaIniciada &&
+                !audio.paused &&
+                intensidad > umbralPulso &&
+                intensidad - intensidadAnterior > cambioMinimoPulso &&
+                ahora - ultimoPulso >= intervaloEntrePulsos;
+
+            if (nuevoPulso) {
+                ultimoPulso = ahora;
+
+                // Solo comenzar un recorrido si no hay otro en curso
+                if (!recorridoActivo) {
+                    anguloCentro = inicio;
+                    recorridoActivo = true;
+                }
+            }
+
+            intensidadAnterior = intensidad;
+
+            // CÍRCULO CON PULSO MUSICAL
+
+            const pasosCirculo = 240;
+            const pulsoCirculo = pulso * 35;
+            const radioCirculo = radio + pulsoCirculo;
+
+            ctx.beginPath();
+
+            for (let i = 0; i <= pasosCirculo; i++) {
+                const angulo = (i / pasosCirculo) * Math.PI * 2;
+
+                const x = centroX + Math.cos(angulo) * radioCirculo;
+                const y = centroY + Math.sin(angulo) * radioCirculo;
+
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+
+            ctx.closePath();
+            ctx.strokeStyle = "white";
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            // PROGRESO DEL RECORRIDO
+
+            const recorridoTotal = inicio - final;
+            const recorridoActual = inicio - anguloCentro;
+
+            let progreso = recorridoActual / recorridoTotal;
+            progreso = Math.max(0, Math.min(1, progreso));
+
+            // La ola crece hasta el 40 % y después disminuye
+
+            let progresoAltura;
+
+            if (progreso <= 0.4) {
+                progresoAltura = progreso / 0.4;
+            } else {
+                progresoAltura = 1 - (progreso - 0.4) / 0.6;
+            }
+
+            progresoAltura = Math.max(0, progresoAltura);
+
+            const alturaMusical = pulso * alturaMaxima;
+            const altura = progresoAltura * alturaMusical;
+
+            // Radio base sincronizado con el círculo
+
+            const radioBase = radioCirculo;
+
+            // ANCHO DE LA OLA
+
+            const ancho =
+                anchoInicial +
+                (anchoFinal - anchoInicial) * progreso;
+
+            const anguloA = anguloCentro + ancho / 2;
+
+            // RELLENO BLANCO DE LA OLA
+
+            ctx.beginPath();
+
+            const pasosOla = 120;
+
+            for (let i = 0; i <= pasosOla; i++) {
+                const t = i / pasosOla;
+                const angulo = anguloA - t * ancho;
+                const forma = Math.pow(Math.sin(t * Math.PI), 2.1);
+                const radioOla = radioBase + forma * altura;
+
+                const x = centroX + Math.cos(angulo) * radioOla;
+                const y = centroY + Math.sin(angulo) * radioOla;
+
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+
+            for (let i = pasosOla; i >= 0; i--) {
+                const t = i / pasosOla;
+                const angulo = anguloA - t * ancho;
+
+                ctx.lineTo(
+                    centroX + Math.cos(angulo) * radioBase,
+                    centroY + Math.sin(angulo) * radioBase
+                );
+            }
+
+            ctx.closePath();
+            ctx.fillStyle = "white";
+            ctx.fill();
+
+            // BORDE DE LA OLA
+
+            ctx.beginPath();
+
+            for (let i = 0; i <= pasosOla; i++) {
+                const t = i / pasosOla;
+                const angulo = anguloA - t * ancho;
+                const forma = Math.pow(Math.sin(t * Math.PI), 2.1);
+                const radioOla = radioBase + forma * altura;
+
+                const x = centroX + Math.cos(angulo) * radioOla;
+                const y = centroY + Math.sin(angulo) * radioOla;
+
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+
+            ctx.strokeStyle = "white";
+            ctx.lineWidth = 5;
+            ctx.stroke();
+
+            // AVANZAR LA OLA SIN PAUSAS FIJAS
+
+            if (musicaIniciada && !audio.paused && recorridoActivo) {
+                anguloCentro -= velocidad;
+
+                if (anguloCentro <= final) {
+                    anguloCentro = final;
+                    recorridoActivo = false;
+                }
+            }
+
+            requestAnimationFrame(dibujar);
+        }
+
+        dibujar();
+    </script>
+</body>
+</html>
