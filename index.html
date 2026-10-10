@@ -10,13 +10,16 @@
             background: #111;
             color: white;
             font-family: Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
             height: 100vh;
             overflow: hidden;
         }
         canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
             background: #111;
         }
         #controles {
@@ -50,29 +53,44 @@
         #estado {
             position: fixed;
             top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
             text-align: center;
             font-size: 13px;
             color: #ccc;
+            z-index: 2;
         }
         #audio {
             position: fixed;
             bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
             width: min(400px, 90%);
+            z-index: 2;
+        }
+        /* Volumen propio: el nativo se oculta para no alterar el análisis */
+        #volumen {
+            position: fixed;
+            bottom: 22px;
+            right: 20px;
+            width: 110px;
+            z-index: 2;
+        }
+        audio::-webkit-media-controls-volume-slider,
+        audio::-webkit-media-controls-mute-button {
+            display: none;
         }
     </style>
 </head>
 <body>
     <div id="controles">
-        <input
-            id="youtubeUrl"
-            type="url"
-            placeholder="Pega una URL de YouTube"
-        >
+        <input id="youtubeUrl" type="url" placeholder="Pega una URL de YouTube">
         <button id="reproducir">Reproducir</button>
     </div>
     <div id="estado">Introduce una URL para comenzar.</div>
     <audio id="audio" controls></audio>
-    <canvas id="canvas" width="900" height="700"></canvas>
+    <input id="volumen" type="range" min="0" max="1" step="0.01" value="1">
+    <canvas id="canvas"></canvas>
     <script>
         const canvas = document.getElementById("canvas");
         const ctx = canvas.getContext("2d");
@@ -80,36 +98,82 @@
         const boton = document.getElementById("reproducir");
         const entradaUrl = document.getElementById("youtubeUrl");
         const estado = document.getElementById("estado");
-        const centroX = 450;
-        const centroY = 350;
-        const radio = 160;
+        const volumen = document.getElementById("volumen");
+
+        // TAMAÑO RESPONSIVE
+        let centroX = 0;
+        let centroY = 0;
+        let radio = 160;
+        let alturaMaxima = 150;
+
+        function ajustarCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            centroX = canvas.width / 2;
+            centroY = canvas.height / 2;
+            radio = Math.min(canvas.width, canvas.height) * 0.23;
+            alturaMaxima = radio * 0.95;
+        }
+        window.addEventListener("resize", ajustarCanvas);
+        ajustarCanvas();
+
+        // BANDA QUE MARCA EL RITMO
+        const BANDA_CENTRO = 8000;
+        const BANDA_ANCHO = 1500;
+
         // CONFIGURACIÓN DE LA OLA
         const anchoInicial = Math.PI / 1.4;
         const anchoFinal = Math.PI / 5;
-        const velocidad = 0.05;
-        const alturaMaxima = 150;
+        let velocidad = 0.12;
         const inicio = 0;
         const final = -Math.PI;
         let anguloCentro = inicio;
         let musicaIniciada = false;
-        // CONTROL DE PULSOS Y RECORRIDO
+
+        // DETECCIÓN DE PULSOS
         let intensidadAnterior = 0;
         let ultimoPulso = 0;
         const umbralPulso = 0.03;
         const cambioMinimoPulso = 0.010;
         const intervaloEntrePulsos = 170;
+        let decaimientoPulso = 0.88;
         let fuerzaPulso = 0;
-        let tiemposPulsos = [];
-        let duracionRedoble = 0;
-        let fuerzaRedoble = 0;
-        const ventanaRedoble = 1800;
         let recorridoActivo = false;
+
+        // TEMPO (se mide con los pulsos recientes)
+        const tiemposPulsos = [];
+        const ventanaTempo = 3500;
+        let tempoMs = 400;
+        const FACTOR_OLA = 0.85;    // más alto = ola más lenta
+        const FACTOR_RELAJ = 0.7;   // más alto = el círculo tarda más en volver
+
+        // PRE-DROP / DROP: BOLA QUE SE CARGA + ANILLOS
+        const VENTANA_RITMO = 1500;     // ms para medir pulsos por segundo
+        const CARGA_SENS = 2;           // pulsos/s por encima de lo normal para carga máxima (más bajo = más sensible)
+        const CARGA_UMBRAL_ANILLO = 0.1; // carga mínima para lanzar anillos
+        const CARGA_CRECE = 0.12;       // cuánto crece la bola con carga máxima (12 %)
+        const ANILLOS_MAX = 6;          // máximo de anillos a la vez
+        const ANILLO_INTERVALO = 110;   // ms mínimos entre anillos
+        const ANILLO_DURACION = 0.8;    // segundos (se acorta con la carga)
+        const ANILLO_ALCANCE = 0.9;     // hasta cuánto crece (× radio)
+        const ARRANQUE_MS = 6000;       // al empezar la canción, aprende el ritmo sin cargar
+        let baseRitmo = 0;
+        let carga = 0;
+        let inicioMusica = 0;
+        let ultimoAnillo = 0;
+        const anillos = [];
+
+        // TIEMPO ENTRE FRAMES
+        let ultimoFrame = performance.now();
+
         // ANALIZADOR DE AUDIO
         let contextoAudio = null;
         let analizador = null;
         let fuenteAudio = null;
+        let ganancia = null;
         let datosFrecuencia = null;
-        let intensidadSuavizada = 0;
+        let intensidad = 0;
+
         async function prepararAudio() {
             if (!contextoAudio) {
                 contextoAudio = new (
@@ -118,55 +182,62 @@
                 analizador = contextoAudio.createAnalyser();
                 analizador.fftSize = 2048;
                 analizador.smoothingTimeConstant = 0.75;
-                datosFrecuencia = new Uint8Array(
-                    analizador.frequencyBinCount
-                );
+                datosFrecuencia = new Uint8Array(analizador.frequencyBinCount);
                 fuenteAudio = contextoAudio.createMediaElementSource(audio);
+
+                // El analizador lee la señal cruda; el volumen se aplica DESPUÉS
                 fuenteAudio.connect(analizador);
-                analizador.connect(contextoAudio.destination);
+                ganancia = contextoAudio.createGain();
+                ganancia.gain.value = parseFloat(volumen.value);
+                analizador.connect(ganancia);
+                ganancia.connect(contextoAudio.destination);
+                audio.volume = 1;
             }
             if (contextoAudio.state === "suspended") {
                 await contextoAudio.resume();
             }
         }
-        // Obtiene la intensidad general del sonido
-        function obtenerIntensidad() {
+
+        volumen.addEventListener("input", () => {
+            if (ganancia) ganancia.gain.value = parseFloat(volumen.value);
+        });
+        // Si algo cambia el volumen nativo, se devuelve a 1 para no alterar el análisis
+        audio.addEventListener("volumechange", () => {
+            if (audio.volume !== 1) audio.volume = 1;
+            if (audio.muted) audio.muted = false;
+        });
+
+        // Intensidad en la banda de ritmo
+        function analizarAudio() {
             if (!analizador || audio.paused) {
-                return 0;
+                intensidad = 0;
+                return;
             }
             analizador.getByteFrequencyData(datosFrecuencia);
-            const frecuenciaPorBin =
-                contextoAudio.sampleRate / analizador.fftSize;
-            const frecuenciaObjetivo = 8000;
-            const anchoBanda = 1500;
-            const binInicio = Math.floor(
-                (frecuenciaObjetivo - anchoBanda) / frecuenciaPorBin
+            const hzPorBin = contextoAudio.sampleRate / analizador.fftSize;
+
+            const binInicio = Math.max(
+                0,
+                Math.floor((BANDA_CENTRO - BANDA_ANCHO) / hzPorBin)
             );
-            const binFin = Math.ceil(
-                (frecuenciaObjetivo + anchoBanda) / frecuenciaPorBin
+            const binFin = Math.min(
+                datosFrecuencia.length - 1,
+                Math.ceil((BANDA_CENTRO + BANDA_ANCHO) / hzPorBin)
             );
             let suma = 0;
             let cantidad = 0;
-            for (
-                let i = Math.max(0, binInicio);
-                i <= Math.min(datosFrecuencia.length - 1, binFin);
-                i++
-            ) {
+            for (let i = binInicio; i <= binFin; i++) {
                 suma += datosFrecuencia[i];
                 cantidad++;
             }
-            if (cantidad === 0) {
-                return 0;
-            }
-            const promedio = suma / cantidad;
-            return promedio / 255;
+            intensidad = cantidad ? suma / cantidad / 255 : 0;
         }
+
         // REPRODUCIR DESDE YOUTUBE
         boton.addEventListener("click", async () => {
             const url = entradaUrl.value.trim();
             if (!/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(url)) {
-                estado.textContent =
-                    "Introduce una URL válida de YouTube.";
+                estado.textContent = "Introduce una URL válida de YouTube.";
                 return;
             }
             try {
@@ -181,6 +252,13 @@
                 recorridoActivo = false;
                 intensidadAnterior = 0;
                 ultimoPulso = 0;
+                tiemposPulsos.length = 0;
+                tempoMs = 400;
+                baseRitmo = 0;
+                carga = 0;
+                anillos.length = 0;
+                ultimoAnillo = 0;
+                inicioMusica = performance.now();
                 estado.textContent = "Música reproduciéndose.";
             } catch (error) {
                 console.error(error);
@@ -190,56 +268,151 @@
                 boton.disabled = false;
             }
         });
+
         // DIBUJAR VISUALIZADOR
         function dibujar() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            const intensidad = obtenerIntensidad();
-            const pulso = Math.min(1, intensidad * 4);
-            // DETECTAR UN NUEVO PULSO
+
             const ahora = performance.now();
+            const dt = Math.min(0.05, (ahora - ultimoFrame) / 1000);
+            ultimoFrame = ahora;
+            const factor = dt * 60;
+
+            analizarAudio();
+            const pulso = Math.min(1, intensidad * 4);
+
+            // DETECTAR UN NUEVO PULSO
             const nuevoPulso =
                 musicaIniciada &&
                 !audio.paused &&
                 intensidad > umbralPulso &&
                 intensidad - intensidadAnterior > cambioMinimoPulso &&
                 ahora - ultimoPulso >= intervaloEntrePulsos;
+
             if (nuevoPulso) {
                 ultimoPulso = ahora;
-                // Solo comenzar un recorrido si no hay otro en curso
+                fuerzaPulso = 1;
+                tiemposPulsos.push(ahora);
+
+                // Mide el tempo con la mediana de los intervalos recientes
+                if (tiemposPulsos.length >= 5) {
+                    const ints = [];
+                    for (let i = 1; i < tiemposPulsos.length; i++) {
+                        ints.push(tiemposPulsos[i] - tiemposPulsos[i - 1]);
+                    }
+                    ints.sort((a, b) => a - b);
+                    const mediana = ints[Math.floor(ints.length / 2)];
+                    tempoMs +=
+                        (Math.min(900, Math.max(170, mediana)) - tempoMs) * 0.15;
+                }
+
+                // La ola solo arranca si no hay otra en curso
                 if (!recorridoActivo) {
                     anguloCentro = inicio;
                     recorridoActivo = true;
                 }
             }
             intensidadAnterior = intensidad;
-            // CÍRCULO CON PULSO MUSICAL
-            if (nuevoPulso) {
-                fuerzaPulso = 1;
+
+            // Descarta pulsos viejos
+            while (
+                tiemposPulsos.length &&
+                ahora - tiemposPulsos[0] > ventanaTempo
+            ) {
+                tiemposPulsos.shift();
             }
-            fuerzaPulso *= 0.97;
+
+            // Velocidad de la ola y relajación del círculo según el tempo
+            const framesPorPulso = (tempoMs / 1000) * 60;
+            velocidad = Math.min(
+                0.25,
+                Math.max(0.04, Math.PI / (framesPorPulso * FACTOR_OLA))
+            );
+            decaimientoPulso = Math.pow(
+                0.05,
+                1 / (framesPorPulso * FACTOR_RELAJ)
+            );
+            fuerzaPulso *= Math.pow(decaimientoPulso, factor);
+
+            // ---- CARGA (PRE-DROP / DROP) ----
+            // Ritmo actual (pulsos por segundo) frente al ritmo "normal" de la canción
+            let recientes = 0;
+            for (let i = tiemposPulsos.length - 1; i >= 0; i--) {
+                if (ahora - tiemposPulsos[i] <= VENTANA_RITMO) recientes++;
+                else break;
+            }
+            const ritmoActual = recientes / (VENTANA_RITMO / 1000);
+            const aprendiendo =
+                !musicaIniciada || ahora - inicioMusica < ARRANQUE_MS;
+            // La base se adapta rápido al empezar y lento después (~5 s)
+            const rapidez = aprendiendo ? 0.05 : 0.003;
+            baseRitmo += (ritmoActual - baseRitmo) * (1 - Math.pow(1 - rapidez, factor));
+
+            const objetivoCarga = aprendiendo || audio.paused
+                ? 0
+                : Math.max(0, Math.min(1, (ritmoActual - baseRitmo) / CARGA_SENS));
+            const velCarga = objetivoCarga > carga ? 0.08 : 0.03;
+            carga += (objetivoCarga - carga) * velCarga * factor;
+
+            // La bola crece con la carga
+            const radioBase = radio * (1 + CARGA_CRECE * carga);
+
+            // Lanza un anillo en cada pulso mientras haya carga
+            if (
+                nuevoPulso &&
+                carga > CARGA_UMBRAL_ANILLO &&
+                ahora - ultimoAnillo >= ANILLO_INTERVALO &&
+                anillos.length < ANILLOS_MAX
+            ) {
+                ultimoAnillo = ahora;
+                anillos.push({
+                    t: 0,
+                    radioInicial: radioBase + fuerzaPulso * radio * 0.19,
+                    fuerza: 0.5 + 0.5 * carga
+                });
+            }
+
+            // ANILLOS (ondas de choque)
+            const duracion = ANILLO_DURACION * (1 - 0.35 * carga);
+            for (let i = anillos.length - 1; i >= 0; i--) {
+                const a = anillos[i];
+                a.t += dt / duracion;
+                if (a.t >= 1) {
+                    anillos.splice(i, 1);
+                    continue;
+                }
+                const suave = 1 - Math.pow(1 - a.t, 2);
+                const r = a.radioInicial + suave * radio * ANILLO_ALCANCE;
+                const alfa = Math.pow(1 - a.t, 1.5) * 0.55 * a.fuerza;
+                ctx.beginPath();
+                ctx.arc(centroX, centroY, r, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(255,255,255,${alfa})`;
+                ctx.lineWidth = 2 - a.t;
+                ctx.stroke();
+            }
+
+            // CÍRCULO CON PULSO MUSICAL
             const pasosCirculo = 240;
-            const pulsoCirculo = fuerzaPulso * 30;
-            const radioCirculo = radio + pulsoCirculo;
+            const pulsoCirculo = fuerzaPulso * radio * 0.19;
+            const radioCirculo = radioBase + pulsoCirculo;
+
             ctx.beginPath();
             for (let i = 0; i <= pasosCirculo; i++) {
                 const angulo = (i / pasosCirculo) * Math.PI * 2;
                 const x = centroX + Math.cos(angulo) * radioCirculo;
                 const y = centroY + Math.sin(angulo) * radioCirculo;
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
             }
             ctx.closePath();
             ctx.strokeStyle = "white";
             ctx.lineWidth = 3;
             ctx.stroke();
+
             // PROGRESO DEL RECORRIDO
-            const recorridoTotal = inicio - final;
-            const recorridoActual = inicio - anguloCentro;
-            let progreso = recorridoActual / recorridoTotal;
+            let progreso = (inicio - anguloCentro) / (inicio - final);
             progreso = Math.max(0, Math.min(1, progreso));
+
             // La ola crece hasta el 40 % y después disminuye
             let progresoAltura;
             if (progreso <= 0.4) {
@@ -248,15 +421,13 @@
                 progresoAltura = 1 - (progreso - 0.4) / 0.6;
             }
             progresoAltura = Math.max(0, progresoAltura);
-            const alturaMusical = pulso * alturaMaxima;
-            const altura = progresoAltura * alturaMusical;
-            // Radio base sincronizado con el círculo
-            const radioBase = radioCirculo;
-            // ANCHO DE LA OLA
-            const ancho =
-                anchoInicial +
-                (anchoFinal - anchoInicial) * progreso;
+
+            const altura = progresoAltura * pulso * alturaMaxima;
+            const radioOlaBase = radioCirculo;
+
+            const ancho = anchoInicial + (anchoFinal - anchoInicial) * progreso;
             const anguloA = anguloCentro + ancho / 2;
+
             // RELLENO BLANCO DE LA OLA
             ctx.beginPath();
             const pasosOla = 120;
@@ -264,52 +435,49 @@
                 const t = i / pasosOla;
                 const angulo = anguloA - t * ancho;
                 const forma = Math.pow(Math.sin(t * Math.PI), 2.1);
-                const radioOla = radioBase + forma * altura;
+                const radioOla = radioOlaBase + forma * altura;
                 const x = centroX + Math.cos(angulo) * radioOla;
                 const y = centroY + Math.sin(angulo) * radioOla;
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
             }
             for (let i = pasosOla; i >= 0; i--) {
                 const t = i / pasosOla;
                 const angulo = anguloA - t * ancho;
                 ctx.lineTo(
-                    centroX + Math.cos(angulo) * radioBase,
-                    centroY + Math.sin(angulo) * radioBase
+                    centroX + Math.cos(angulo) * radioOlaBase,
+                    centroY + Math.sin(angulo) * radioOlaBase
                 );
             }
             ctx.closePath();
             ctx.fillStyle = "white";
             ctx.fill();
+
             // BORDE DE LA OLA
             ctx.beginPath();
             for (let i = 0; i <= pasosOla; i++) {
                 const t = i / pasosOla;
                 const angulo = anguloA - t * ancho;
                 const forma = Math.pow(Math.sin(t * Math.PI), 2.1);
-                const radioOla = radioBase + forma * altura;
+                const radioOla = radioOlaBase + forma * altura;
                 const x = centroX + Math.cos(angulo) * radioOla;
                 const y = centroY + Math.sin(angulo) * radioOla;
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
             }
             ctx.strokeStyle = "white";
             ctx.lineWidth = 5;
             ctx.stroke();
-            // AVANZAR LA OLA SIN PAUSAS FIJAS
+
+            // AVANZAR LA OLA (siempre termina su recorrido)
             if (musicaIniciada && !audio.paused && recorridoActivo) {
-                anguloCentro -= velocidad;
+                anguloCentro -= velocidad * factor;
                 if (anguloCentro <= final) {
                     anguloCentro = final;
                     recorridoActivo = false;
                 }
             }
+
             requestAnimationFrame(dibujar);
         }
         dibujar();
