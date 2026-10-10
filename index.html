@@ -511,7 +511,7 @@
             const bolaY = canvas.height / 2;
             const radio = Math.min(canvas.width, canvas.height) * 0.23;
             const radioObjetivo =
-                radio * (1 + CRECE_PROMEDIO * promedio * 3) + fuerzaPulso * radio * 0.19;
+                    radio * (1 + CRECE_PROMEDIO * promedio * 3) + fuerzaPulso * radio * 0.19;
                 if (radioSuave === 0) radioSuave = radioObjetivo;
                 radioSuave += (radioObjetivo - radioSuave) * (1 - Math.pow(1 - SUAVIZADO_BOLA, factor));
                 const radioBola = radioSuave;
