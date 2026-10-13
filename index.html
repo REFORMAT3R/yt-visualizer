@@ -139,22 +139,14 @@
         window.addEventListener("resize", ajustarCanvas);
         ajustarCanvas();
 
-        // BANDAS (frecuencia central en Hz)
+        // BANDAS QUE SE USAN (frecuencia central en Hz)
+        // Se quitaron 60, 400, 2.5k, 5k, 12k y 16k: no hacen falta para el pulso
         const ANCHO_BANDA = 1.25;
         const bandas = [
-            { f: 60,    etq: "60 Hz" },
-            { f: 150,   etq: "150 Hz" },
-            { f: 400,   etq: "400 Hz" },
-            { f: 1000,  etq: "1 kHz" },
-            { f: 2500,  etq: "2.5 kHz" },
-            { f: 5000,  etq: "5 kHz" },
-            { f: 8000,  etq: "8 kHz" },
-            { f: 12000, etq: "12 kHz" },
-            { f: 16000, etq: "16 kHz" }
+            { f: 150,  etq: "150 Hz" },   // ritmo grave (bombo y bajo)
+            { f: 8000, etq: "8 kHz" }     // agudos (hi-hats, ritmo fino)
         ];
-        const BANDA_OLA = 1;            // índice de la banda que dispara la ola (1 = 150 Hz)
         const N = bandas.map(() => 0);
-        const valores = N.slice();      // nivel suavizado de cada banda (para el tamaño base)
         const medias = N.slice();       // nivel normal de cada banda
         const previos = N.slice();      // nivel del frame anterior
         const ultimoPulsoBanda = N.slice();
@@ -164,8 +156,6 @@
         // AJUSTES DE NIVEL
         const MEDIA_VEL = 0.015;
         const EXCESO = 5;
-        const ATAQUE = 0.6;
-        const CAIDA = 0.20;
 
         // DETECCIÓN DE PULSOS (cada banda tiene su detector)
         const UMBRAL_EXCESO = 0.05;     // cuánto debe superar a su promedio
@@ -191,29 +181,11 @@
         let fuerzaPulso = 0;
         let tempoMs = 400;
         const tiemposGuia = [];
-        const FACTOR_RELAJ = 0.9;       // más alto = la bola tarda más en volver
+        const FACTOR_RELAJ = 2;       // más alto = la bola tarda más en volver
         const CRECE_PROMEDIO = 0.08;    // cuánto crece la bola con el nivel promedio
         let radioSuave = 0;
-        const SUAVIZADO_BOLA = 0.35;   // más bajo = más lento y suave (0.15 muy suave, 0.6 casi sin suavizar)
-
-        // OLA (se activa con un cambio brusco en la banda BANDA_OLA)
-        const anchoInicial = Math.PI / 1.4;
-        const anchoFinal = Math.PI / 5;
-        const inicio = 0;
-        const final = -Math.PI;
-        const OLA_VENTANA = 100;        // ms en los que se mide el salto
-        const OLA_SALTO_MIN = 0.08;     // salto mínimo para lanzar una ola (más alto = menos olas)
-        const OLA_REL = 2.6;              // el salto debe superar X veces el salto típico de la banda
-        const OLA_SALTO_MAX = 0.30;     // salto que da la ola de altura máxima
-        const OLA_ALTURA_MIN = 0.3;     // altura mínima (proporción) de cualquier ola
-        const OLA_INTERVALO = 300;      // ms mínimos entre olas
-        const OLA_DURACION = 0.45;       // segundos que tarda en recorrer medio círculo
-        const histOla = [];             // {t, v} de los últimos OLA_VENTANA ms
-        let variacionOla = 0;           // salto típico de la banda
-        let anguloCentro = inicio;
-        let recorridoActivo = false;
-        let alturaOla = 0;
-        let ultimaOla = 0;
+        const SUAVIZADO_BOLA = 0.35;    // más bajo = más lento y suave
+        const valores = N.slice();      // nivel suavizado de cada banda (para el tamaño base)
 
         // DEPURACIÓN (pon true para ver la banda guía bajo la bola)
         const MOSTRAR_DEBUG = false;
@@ -348,12 +320,7 @@
                 ultimoGolpe = 0;
                 fuerzaPulso = 0;
                 tempoMs = 400;
-                histOla.length = 0;
-                variacionOla = 0;
-                anguloCentro = inicio;
-                recorridoActivo = false;
-                alturaOla = 0;
-                ultimaOla = 0;
+                radioSuave = 0;
                 barraRelleno.style.width = "0%";
                 totalTxt.textContent = "--:--";
                 estado.textContent = "Música reproduciéndose.";
@@ -377,21 +344,19 @@
             const activo = musicaIniciada && !audio.paused;
 
             const nivel = leerBandas();
-            const ataque = 1 - Math.pow(1 - ATAQUE, factor);
-            const caida = 1 - Math.pow(1 - CAIDA, factor);
+            const ataque = 1 - Math.pow(1 - 0.6, factor);
+            const caida = 1 - Math.pow(1 - 0.2, factor);
             const rapidezMedia =
                 ahora - inicioMusica < ARRANQUE_MS ? 0.15 : MEDIA_VEL;
 
             let pulsoGuia = false;
-            let golpeSeco = false;
-            let mejorGolpe = 0;   // el exceso más alto de este frame
 
             for (let k = 0; k < bandas.length; k++) {
                 // Promedio lento y exceso sobre él
                 medias[k] += (nivel[k] - medias[k]) * (1 - Math.pow(1 - rapidezMedia, factor));
                 const exceso = Math.max(0, nivel[k] - medias[k]);
 
-                // Nivel suavizado (sirve para el tamaño base de la bola)
+                // Nivel suavizado (tamaño base de la bola)
                 const o = Math.min(1, exceso * EXCESO);
                 valores[k] += (o - valores[k]) * (o > valores[k] ? ataque : caida);
 
@@ -409,28 +374,11 @@
                     if (k === guia && pps[k] >= PPS_MIN) pulsoGuia = true;
                 }
 
-                // Golpe seco: candidata si es fuerte y la banda casi no da pulsos
-                if (
-                    activo &&
-                    ahora - inicioMusica > 500 &&
-                    exceso > GOLPE_EXCESO &&
-                    nivel[k] - previos[k] > CAMBIO_MIN &&
-                    pps[k] < PPS_MIN &&
-                    exceso > mejorGolpe
-                ) {
-                    mejorGolpe = exceso;
-                }
 
                 previos[k] = nivel[k];
                 const lista = pulsosBanda[k];
                 while (lista.length && ahora - lista[0] > VENTANA_PPS) lista.shift();
                 pps[k] = lista.length / (VENTANA_PPS / 1000);
-            }
-
-            // Solo un golpe seco: el de la banda más alta, con cooldown global
-            if (mejorGolpe > 0 && ahora - ultimoGolpe >= GOLPE_INTERVALO) {
-                ultimoGolpe = ahora;
-                golpeSeco = true;
             }
 
             // ---- ELEGIR LA BANDA GUÍA: la que menos pulsos/s da (entre las vivas) ----
@@ -456,11 +404,8 @@
             }
 
             // ---- PULSO DE LA BOLA ----
-            if (golpeSeco) {
-                fuerzaPulso = Math.max(fuerzaPulso, GOLPE_FUERZA);
-            }
             if (pulsoGuia) {
-                fuerzaPulso = 1;
+                fuerzaPulso = 1;    
                 tiemposGuia.push(ahora);
                 while (tiemposGuia.length > 12) tiemposGuia.shift();
                 if (tiemposGuia.length >= 5) {
@@ -478,32 +423,7 @@
             const decaimiento = Math.pow(0.05, 1 / (framesPorPulso * FACTOR_RELAJ));
             fuerzaPulso *= Math.pow(decaimiento, factor);
 
-            // ---- DETECTAR CAMBIO BRUSCO PARA LA OLA ----
-            const nivelOla = nivel[BANDA_OLA];
-            histOla.push({ t: ahora, v: nivelOla });
-            while (histOla.length && ahora - histOla[0].t > OLA_VENTANA) histOla.shift();
-            let minimo = nivelOla;
-            for (const h of histOla) if (h.v < minimo) minimo = h.v;
-            const salto = nivelOla - minimo;   // cuánto subió en los últimos OLA_VENTANA ms
-
-            const umbralOla = Math.max(OLA_SALTO_MIN, variacionOla * OLA_REL);
-            if (
-                activo &&
-                ahora - inicioMusica > 1000 &&
-                !recorridoActivo &&
-                salto > umbralOla &&
-                ahora - ultimaOla >= OLA_INTERVALO
-            ) {
-                ultimaOla = ahora;
-                recorridoActivo = true;
-                anguloCentro = inicio;
-                // La altura depende de qué tan brusco fue el salto
-                alturaOla = Math.max(OLA_ALTURA_MIN, Math.min(1, salto / OLA_SALTO_MAX));
-            }
-            // Salto típico de la banda (se adapta a cada canción)
-            variacionOla += (salto - variacionOla) * (1 - Math.pow(1 - 0.02, factor));
-
-            // Nivel promedio de todas las bandas (para el tamaño base)
+            // Nivel promedio de las bandas usadas (para el tamaño base)
             const promedio = valores.reduce((a, b) => a + b, 0) / valores.length;
 
             // ---- BOLA (centrada) ----
@@ -511,16 +431,15 @@
             const bolaY = canvas.height / 2;
             const radio = Math.min(canvas.width, canvas.height) * 0.23;
             const radioObjetivo =
-                    radio * (1 + CRECE_PROMEDIO * promedio * 3) + fuerzaPulso * radio * 0.19;
-                if (radioSuave === 0) radioSuave = radioObjetivo;
-                radioSuave += (radioObjetivo - radioSuave) * (1 - Math.pow(1 - SUAVIZADO_BOLA, factor));
-                const radioBola = radioSuave;
+                radio * (1 + CRECE_PROMEDIO * promedio * 3) + fuerzaPulso * radio * 0.12;
+            if (radioSuave === 0) radioSuave = radioObjetivo;
+            radioSuave += (radioObjetivo - radioSuave) * (1 - Math.pow(1 - SUAVIZADO_BOLA, factor));
 
             ctx.beginPath();
             for (let i = 0; i <= 240; i++) {
                 const a = (i / 240) * Math.PI * 2;
-                const x = bolaX + Math.cos(a) * radioBola;
-                const y = bolaY + Math.sin(a) * radioBola;
+                const x = bolaX + Math.cos(a) * radioSuave;
+                const y = bolaY + Math.sin(a) * radioSuave;
                 if (i === 0) ctx.moveTo(x, y);
                 else ctx.lineTo(x, y);
             }
@@ -528,72 +447,6 @@
             ctx.strokeStyle = "white";
             ctx.lineWidth = 3;
             ctx.stroke();
-
-            // ---- OLA ----
-            if (recorridoActivo) {
-                let progreso = (inicio - anguloCentro) / (inicio - final);
-                progreso = Math.max(0, Math.min(1, progreso));
-
-                // La ola crece hasta el 40 % del recorrido y después disminuye
-                let progresoAltura;
-                if (progreso <= 0.4) progresoAltura = progreso / 0.4;
-                else progresoAltura = 1 - (progreso - 0.4) / 0.6;
-                progresoAltura = Math.max(0, progresoAltura);
-
-                const altura = progresoAltura * alturaOla * radio * 0.95;
-                const ancho = anchoInicial + (anchoFinal - anchoInicial) * progreso;
-                const anguloA = anguloCentro + ancho / 2;
-                const pasosOla = 120;
-
-                // Relleno
-                ctx.beginPath();
-                for (let i = 0; i <= pasosOla; i++) {
-                    const t = i / pasosOla;
-                    const ang = anguloA - t * ancho;
-                    const forma = Math.pow(Math.sin(t * Math.PI), 2.1);
-                    const r = radioBola + forma * altura;
-                    const x = bolaX + Math.cos(ang) * r;
-                    const y = bolaY + Math.sin(ang) * r;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
-                for (let i = pasosOla; i >= 0; i--) {
-                    const t = i / pasosOla;
-                    const ang = anguloA - t * ancho;
-                    ctx.lineTo(
-                        bolaX + Math.cos(ang) * radioBola,
-                        bolaY + Math.sin(ang) * radioBola
-                    );
-                }
-                ctx.closePath();
-                ctx.fillStyle = "white";
-                ctx.fill();
-
-                // Borde
-                ctx.beginPath();
-                for (let i = 0; i <= pasosOla; i++) {
-                    const t = i / pasosOla;
-                    const ang = anguloA - t * ancho;
-                    const forma = Math.pow(Math.sin(t * Math.PI), 2.1);
-                    const r = radioBola + forma * altura;
-                    const x = bolaX + Math.cos(ang) * r;
-                    const y = bolaY + Math.sin(ang) * r;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                }
-                ctx.strokeStyle = "white";
-                ctx.lineWidth = 5;
-                ctx.stroke();
-
-                // Avanza (siempre termina su recorrido)
-                if (activo) {
-                    anguloCentro -= (Math.PI / (OLA_DURACION * 60)) * factor;
-                    if (anguloCentro <= final) {
-                        anguloCentro = final;
-                        recorridoActivo = false;
-                    }
-                }
-            }
 
             if (MOSTRAR_DEBUG) {
                 ctx.fillStyle = "#888";
