@@ -140,54 +140,60 @@
         ajustarCanvas();
 
         // BANDAS QUE SE USAN (frecuencia central en Hz)
-        // Se quitaron 60, 400, 2.5k, 5k, 12k y 16k: no hacen falta para el pulso
         const ANCHO_BANDA = 1.25;
         const bandas = [
-            { f: 150,  etq: "150 Hz" },   // ritmo grave (bombo y bajo)
-            { f: 8000, etq: "8 kHz" }     // agudos (hi-hats, ritmo fino)
+            { f: 150,  etq: "150 Hz" },   // ritmo grave (bombo y bajo) -> bola
+            { f: 8000, etq: "8 kHz" }     // agudos (hi-hats, ritmo fino) -> bola
         ];
         const N = bandas.map(() => 0);
-        const medias = N.slice();       // nivel normal de cada banda
-        const previos = N.slice();      // nivel del frame anterior
+        const medias = N.slice();
+        const previos = N.slice();
         const ultimoPulsoBanda = N.slice();
-        const pulsosBanda = bandas.map(() => []);  // tiempos de pulsos por banda
-        const pps = N.slice();          // pulsos por segundo de cada banda
+        const pulsosBanda = bandas.map(() => []);
+        const pps = N.slice();
+        const valores = N.slice();
 
         // AJUSTES DE NIVEL
         const MEDIA_VEL = 0.015;
         const EXCESO = 5;
 
-        // DETECCIÓN DE PULSOS (cada banda tiene su detector)
-        const UMBRAL_EXCESO = 0.05;     // cuánto debe superar a su promedio
-        const CAMBIO_MIN = 0.015;       // subida mínima respecto al frame anterior
-        const INTERVALO_MIN = 150;      // ms mínimos entre pulsos de una misma banda
-        const VENTANA_PPS = 2000;       // ms para contar pulsos por segundo
-        const ARRANQUE_MS = 2000;       // al empezar, el promedio se adapta rápido
+        // DETECCIÓN DE PULSOS
+        const UMBRAL_EXCESO = 0.05;
+        const CAMBIO_MIN = 0.015;
+        const INTERVALO_MIN = 150;
+        const VENTANA_PPS = 2000;
+        const ARRANQUE_MS = 2000;
 
         // ELECCIÓN DE LA BANDA GUÍA DE LA BOLA
-        const PPS_MIN = 2.1;            // una banda con menos pulsos/s no cuenta (está muerta)
-        const VENTAJA_CAMBIO = 1;       // la nueva debe tener 1 pulso/s menos para quitarle el puesto
-        const ESPERA_CAMBIO = 1500;     // ms mínimos entre cambios de banda guía
+        const PPS_MIN = 2.1;
+        const VENTAJA_CAMBIO = 1;
+        const ESPERA_CAMBIO = 1500;
         let guia = -1;
         let ultimoCambioGuia = 0;
-
-        // GOLPES SECOS (solo uno por frame: gana la banda con más exceso)
-        const GOLPE_EXCESO = 0.10;      // cuánto debe superar a su promedio
-        const GOLPE_INTERVALO = 200;    // ms mínimos entre golpes secos de TODA la bola
-        const GOLPE_FUERZA = 1.2;       // cuánto late la bola con un golpe seco
-        let ultimoGolpe = 0;
 
         // BOLA
         let fuerzaPulso = 0;
         let tempoMs = 400;
         const tiemposGuia = [];
-        const FACTOR_RELAJ = 2;       // más alto = la bola tarda más en volver
-        const CRECE_PROMEDIO = 0.08;    // cuánto crece la bola con el nivel promedio
+        const FACTOR_RELAJ = 1.7;       // más alto = la bola tarda más en volver
+        const CRECE_PROMEDIO = 0.08;
         let radioSuave = 0;
-        const SUAVIZADO_BOLA = 0.35;    // más bajo = más lento y suave
-        const valores = N.slice();      // nivel suavizado de cada banda (para el tamaño base)
+        const SUAVIZADO_BOLA = 0.35;
 
-        // DEPURACIÓN (pon true para ver la banda guía bajo la bola)
+        // ANILLOS (detectados en 5 kHz, salen de la bola)
+        const FREC_ANILLO = 5000;
+        const ANILLO_UMBRAL = 0.06;     // cuánto debe superar a su promedio
+        const ANILLO_CAMBIO = 0.02;     // subida mínima respecto al frame anterior
+        const ANILLO_INTERVALO = 120;   // ms mínimos entre anillos
+        const ANILLO_DURACION = 0.7;    // segundos que tarda en desvanecerse
+        const ANILLO_ALCANCE = 0.9;     // hasta cuánto crece (× radio)
+        const ANILLOS_MAX = 6;
+        const anillos = [];
+        let medioAnillo = 0;
+        let previoAnillo = 0;
+        let ultimoAnilloT = 0;
+
+        // DEPURACIÓN
         const MOSTRAR_DEBUG = false;
 
         let musicaIniciada = false;
@@ -228,26 +234,30 @@
             if (ganancia) ganancia.gain.value = parseFloat(volumen.value);
         });
 
-        // Nivel (0-1) de cada banda
+        // Nivel (0-1) de una frecuencia central
+        function nivelEn(f) {
+            if (!analizador || audio.paused) return 0;
+            const hzPorBin = contextoAudio.sampleRate / analizador.fftSize;
+            const maxBin = datosFrecuencia.length - 1;
+            const ini = Math.max(1, Math.floor((f / ANCHO_BANDA) / hzPorBin));
+            const fin = Math.min(maxBin, Math.ceil((f * ANCHO_BANDA) / hzPorBin));
+            if (ini > maxBin) return 0;
+            let suma = 0;
+            let n = 0;
+            for (let i = ini; i <= fin; i++) {
+                suma += datosFrecuencia[i];
+                n++;
+            }
+            return n ? suma / n / 255 : 0;
+        }
+
+        // Nivel (0-1) de cada banda de la bola
         function leerBandas() {
             const salida = bandas.map(() => 0);
             if (!analizador || audio.paused) return salida;
-
             analizador.getByteFrequencyData(datosFrecuencia);
-            const hzPorBin = contextoAudio.sampleRate / analizador.fftSize;
-            const maxBin = datosFrecuencia.length - 1;
-
             bandas.forEach((b, k) => {
-                const ini = Math.max(1, Math.floor((b.f / ANCHO_BANDA) / hzPorBin));
-                const fin = Math.min(maxBin, Math.ceil((b.f * ANCHO_BANDA) / hzPorBin));
-                if (ini > maxBin) return;
-                let suma = 0;
-                let n = 0;
-                for (let i = ini; i <= fin; i++) {
-                    suma += datosFrecuencia[i];
-                    n++;
-                }
-                salida[k] = n ? suma / n / 255 : 0;
+                salida[k] = nivelEn(b.f);
             });
             return salida;
         }
@@ -317,10 +327,13 @@
                 tiemposGuia.length = 0;
                 guia = -1;
                 ultimoCambioGuia = 0;
-                ultimoGolpe = 0;
                 fuerzaPulso = 0;
                 tempoMs = 400;
                 radioSuave = 0;
+                anillos.length = 0;
+                medioAnillo = 0;
+                previoAnillo = 0;
+                ultimoAnilloT = 0;
                 barraRelleno.style.width = "0%";
                 totalTxt.textContent = "--:--";
                 estado.textContent = "Música reproduciéndose.";
@@ -344,23 +357,18 @@
             const activo = musicaIniciada && !audio.paused;
 
             const nivel = leerBandas();
-            const ataque = 1 - Math.pow(1 - 0.6, factor);
-            const caida = 1 - Math.pow(1 - 0.2, factor);
             const rapidezMedia =
                 ahora - inicioMusica < ARRANQUE_MS ? 0.15 : MEDIA_VEL;
 
             let pulsoGuia = false;
 
             for (let k = 0; k < bandas.length; k++) {
-                // Promedio lento y exceso sobre él
                 medias[k] += (nivel[k] - medias[k]) * (1 - Math.pow(1 - rapidezMedia, factor));
                 const exceso = Math.max(0, nivel[k] - medias[k]);
 
-                // Nivel suavizado (tamaño base de la bola)
                 const o = Math.min(1, exceso * EXCESO);
-                valores[k] += (o - valores[k]) * (o > valores[k] ? ataque : caida);
+                valores[k] += (o - valores[k]) * (o > valores[k] ? 0.6 : 0.2);
 
-                // Detector de pulsos de esta banda
                 const hayPulso =
                     activo &&
                     ahora - inicioMusica > 500 &&
@@ -374,14 +382,13 @@
                     if (k === guia && pps[k] >= PPS_MIN) pulsoGuia = true;
                 }
 
-
                 previos[k] = nivel[k];
                 const lista = pulsosBanda[k];
                 while (lista.length && ahora - lista[0] > VENTANA_PPS) lista.shift();
                 pps[k] = lista.length / (VENTANA_PPS / 1000);
             }
 
-            // ---- ELEGIR LA BANDA GUÍA: la que menos pulsos/s da (entre las vivas) ----
+            // ---- ELEGIR LA BANDA GUÍA ----
             let mejor = -1;
             for (let k = 0; k < bandas.length; k++) {
                 if (pps[k] < PPS_MIN) continue;
@@ -405,7 +412,7 @@
 
             // ---- PULSO DE LA BOLA ----
             if (pulsoGuia) {
-                fuerzaPulso = 1;    
+                fuerzaPulso = 1;
                 tiemposGuia.push(ahora);
                 while (tiemposGuia.length > 12) tiemposGuia.shift();
                 if (tiemposGuia.length >= 5) {
@@ -418,12 +425,10 @@
                     tempoMs += (Math.min(900, Math.max(120, mediana)) - tempoMs) * 0.15;
                 }
             }
-            // La bola se relaja en ~70 % del tiempo entre pulsos
             const framesPorPulso = (tempoMs / 1000) * 60;
             const decaimiento = Math.pow(0.05, 1 / (framesPorPulso * FACTOR_RELAJ));
             fuerzaPulso *= Math.pow(decaimiento, factor);
 
-            // Nivel promedio de las bandas usadas (para el tamaño base)
             const promedio = valores.reduce((a, b) => a + b, 0) / valores.length;
 
             // ---- BOLA (centrada) ----
@@ -431,10 +436,47 @@
             const bolaY = canvas.height / 2;
             const radio = Math.min(canvas.width, canvas.height) * 0.23;
             const radioObjetivo =
-                radio * (1 + CRECE_PROMEDIO * promedio * 3) + fuerzaPulso * radio * 0.12;
+                radio * (1 + CRECE_PROMEDIO * promedio * 3) + fuerzaPulso * radio * 0.01;
             if (radioSuave === 0) radioSuave = radioObjetivo;
             radioSuave += (radioObjetivo - radioSuave) * (1 - Math.pow(1 - SUAVIZADO_BOLA, factor));
 
+            // ---- ANILLOS (5 kHz) ----
+            const n5 = nivelEn(FREC_ANILLO);
+            const subidaAnillo = n5 - previoAnillo;
+            medioAnillo += (n5 - medioAnillo) * (1 - Math.pow(1 - 0.02, factor));
+            const excesoAnillo = Math.max(0, n5 - medioAnillo);
+            previoAnillo = n5;
+
+            if (
+                activo &&
+                ahora - inicioMusica > 1000 &&
+                excesoAnillo > ANILLO_UMBRAL &&
+                subidaAnillo > ANILLO_CAMBIO &&
+                ahora - ultimoAnilloT >= ANILLO_INTERVALO &&
+                anillos.length < ANILLOS_MAX
+            ) {
+                ultimoAnilloT = ahora;
+                anillos.push({ t: 0, fuerza: Math.min(1, 0.5 + excesoAnillo * 3) });
+            }
+
+            for (let i = anillos.length - 1; i >= 0; i--) {
+                const a = anillos[i];
+                a.t += dt / ANILLO_DURACION;
+                if (a.t >= 1) {
+                    anillos.splice(i, 1);
+                    continue;
+                }
+                const suave = 1 - Math.pow(1 - a.t, 2);
+                const r = radioSuave + suave * radio * ANILLO_ALCANCE;
+                const alfa = Math.pow(1 - a.t, 1.5) * 0.55 * a.fuerza;
+                ctx.beginPath();
+                ctx.arc(bolaX, bolaY, r, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(255,255,255,${alfa})`;
+                ctx.lineWidth = 2 - a.t;
+                ctx.stroke();
+            }
+
+            // ---- LÍNEA DE LA BOLA ----
             ctx.beginPath();
             for (let i = 0; i <= 240; i++) {
                 const a = (i / 240) * Math.PI * 2;
