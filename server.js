@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const path = require('path');
 
 function obtenerStreamUrl(youtubeUrl) {
     return new Promise((resolve, reject) => {
@@ -137,6 +138,28 @@ const servidor = http.createServer(async (req, res) => {
             }
         }
 
+        return;
+    }
+
+        if (url.pathname.endsWith('.js')) {
+        const nombre = path.basename(url.pathname);
+        const ruta = path.join(__dirname, nombre);
+
+        fs.readFile(ruta, (error, contenido) => {
+            if (error) {
+                res.writeHead(404);
+                res.end('No encontrado');
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+            res.end(contenido);
+        });
+        return;
+    }
+
+    if (url.pathname === '/favicon.ico') {
+        res.writeHead(204);
+        res.end();
         return;
     }
 
