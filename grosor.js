@@ -1,8 +1,8 @@
 // Grosor del borde de la bola según el sub-grave (60 Hz)
 const FREC_GROSOR = 60;          // debe existir en bandas[] de deteccion.js
-const GROSOR_BASE = 8;           // grosor normal de la línea (px)
-const GROSOR_EXTRA = 3;          // cuánto se suma como máximo (px)
-const GROSOR_EXCESO = 12;         // sensibilidad: más alto = reacciona con menos energía
+const GROSOR_BASE = 16;           // grosor normal de la línea (px)
+const GROSOR_EXTRA = 12;          // cuánto se suma como máximo (px)
+const GROSOR_EXCESO = 25;         // sensibilidad: más alto = reacciona con menos energía
 const GROSOR_PROM_VEL = 0.02;    // qué tan lento aprende el nivel "normal"
 const GROSOR_ATAQUE = 0.2;      // subida (más alto = más rápido)
 const GROSOR_CAIDA = 0.1;       // bajada (más bajo = más lento y suave)
